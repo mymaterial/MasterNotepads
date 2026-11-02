@@ -1,0 +1,36 @@
+logical backup: 
+
+	- exporting your table to a flat file.
+	- can be taken at table level, group of tables, schema, database and group of databases
+	- cannot apply PITR on top of restored logical backup
+	- pg_dump, psql or pg_restore
+	
+export
+======
+/usr/pgsql-18/bin/pg_dump -U kfc_user -d kfc_db -t emp > emp.sql
+
+import
+======
+/usr/pgsql-18/bin/psql -U kfc_user -d kfc_db < emp.sql
+
+
+pg_dump -U kfc_user -d kfc_db -t emp -Fc -f emp.bkp			#custom format, cannot read, compression is possible
+pg_dump -U kfc_user -d kfc_db -t emp -Fp -f emp.plain		#can read
+pg_dump -U kfc_user -d kfc_db -t emp -Ft -f emp.tar			#tar format, we hardly use it, o/s tar
+pg_dump -U kfc_user -d kfc_db -t emp -Fd -f emp				#directory format, parallelism 
+
+exmaples.,
+
+pg_dump -U kfc_user -d kfc_db -t emp -Fc -f emp1.bkp -Z 9
+pg_dump -U kfc_user -d kfc_db -t emp -Fc -f emp1.bkp -Z lz4:9
+pg_dump -U kfc_user -d kfc_db -t emp -Fc -f emp1.bkp -Z gzip:9
+
+restore your backup using pg_restore
+------------------------------------
+/usr/pgsql-18/bin/pg_restore -U kfc_user -d kfc_db emp.bk
+
+
+kfc_uatdb=# alter schema kfc_user rename to kfc_uat;
+ALTER SCHEMA
+kfc_uatdb=# alter schema kfc_uat owner to kfc_uat;
+ALTER SCHEMA
