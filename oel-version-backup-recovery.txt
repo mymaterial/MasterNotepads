@@ -19,6 +19,25 @@ cat .ssh/id_rsa.pub | ssh postgres@192.168.254.128 'cat >> .ssh/authorized_keys'
 ssh postgres@192.168.254.128 "chmod 700 .ssh; chmod 640 .ssh/authorized_keys"
 ssh postgres@192.168.254.128 
 
+## repeat from 192.168.254.129
+
+ssh-keygen -t rsa
+ssh postgres@192.168.254.128 mkdir -p .ssh
+cat .ssh/id_rsa.pub | ssh postgres@192.168.254.128 'cat >> .ssh/authorized_keys'
+ssh postgres@192.168.254.128 "chmod 700 .ssh; chmod 640 .ssh/authorized_keys"
+ssh postgres@192.168.254.128 
+
+## check it
+
+[postgres@lab01 ~]$ ssh 192.168.254.129
+Last login: Mon Nov  2 08:51:19 2026 from 192.168.254.128
+[postgres@lab02 ~]$
+
+[postgres@lab02 ~]$  ssh 192.168.254.128
+Last login: Mon Nov  2 08:52:02 2026 from 192.168.254.129
+[postgres@lab01 ~]$
+
+## install the software
 dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm
 dnf install -y postgresql18-server postgresql18-contrib postgresql18-devel
 
