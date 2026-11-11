@@ -1,0 +1,277 @@
+
+192.168.44.134 -> primary
+192.168.44.135 -> replica
+192.168.44.142 -> pgpool node
+
+120mbps
+
+
+task 1: take the backup in remote machine and start it.
+---------------------------------------------------------
+/usr/pgsql-17/bin/pg_basebackup -D /u01/pgsql/17 --checkpoint=fast -P -h 192.168.169.128
+/usr/pgsql-17/bin/pg_ctl start -D /u01/pgsql/17
+
+task 2: take the backup in remote machine + apply archive logs generated after the backup and start it.
+---------------------------------------------------------------------------
+touch recovery.signal		
+restore_command = 'scp 192.168.169.128:/u01/archivelogs/%f %p'
+
+task 3: take the backup in remote machine + apply archive logs generated after the backup but till my fav point only and start 
+---------------------------------------------------------------------------
+touch recovery.signal		
+restore_command = 'scp 192.168.169.128:/u01/archivelogs/%f %p'
+recovery_target_lsn = '0/407A1C30'
+
+
+task 4: take the backup in remote machine + apply archive logs generated and wait for next archive to generate. 
+---------------------------------------------------------------------------
+touch standby.signal		
+restore_command = 'scp 192.168.169.128:/u01/archivelogs/%f %p'
+
+
+task 5: take the backup in remote machine + apply archive logs generated and don't wait for next archive instead get it from wal.  (asynchrnous standy setup)
+------
+touch standby.signal		
+restore_command = 'scp 192.168.169.128:/u01/archivelogs/%f %p'
+primary_conninfo = 'user=postgres password=postgres host=192.168.169.128'                  
+
+
+task 5: convert to synchronous streaming replication
+----------------------------------------------------
+primary_conninfo = 'user=postgres password=postgres host=192.168.169.128 application_name=random'    ##standby
+synchronous_standby_names='*' 	##primary
+
+task 6: -R
+-----------
+/usr/pgsql-17/bin/pg_basebackup -D /u01/pgsql/17 --checkpoint=fast -P -h 192.168.169.128 -R
+
+sync status command
+-----------------------
+select pid,client_addr,sent_lsn,replay_lsn, pg_size_pretty(pg_wal_lsn_diff(sent_lsn,replay_lsn)) as "lag in mb" from pg_stat_replication;
+
+
+task 7: Replication slot based replication
+---------
+/usr/pgsql-17/bin/pg_basebackup -D /u01/pgsql/17 --checkpoint=fast -P -h 192.168.169.128 -R -C -S my_slot_02
+
+otherway,
+
+select pg_create_physical_replication_slot('slot_name_01');
+primary_conninfo = 'user=postgres password=postgres host=192.168.169.128 primary_slot_name=slot_name_01'    ##standby
+
+hot standby conflicts
+----------------------
+https://www.postgresql.org/docs/current/hot-standby.html#HOT-STANDBY-CONFLICT
+hot_standby_feedback
+max_standby_streaming_delay  
+
+postgres=# select *, pg_sleep(180) from e;
+ERROR:  canceling statement due to conflict with recovery
+DETAIL:  User query might have needed to see row versions that must be removed.
+postgres=#
+
+
+a=# select * , pg_sleep(60) from i;
+FATAL:  terminating connection due to conflict with recovery
+DETAIL:  User was connected to a database that must be dropped.
+HINT:  In a moment you should be able to reconnect to the database and repeat your command.
+server closed the connection unexpectedly
+        This probably means the server terminated abnormally
+        before or while processing the request.
+The connection to the server was lost. Attempting reset: Failed.
+The connection to the server was lost. Attempting reset: Failed.
+!?>
+
+SWITCHOVER DRILL
+---------------------
+wal_log_hints = on		#mandatory parameter
+
+* STOP APPLICATION (ensure no application is connected, no active transactions in place)
+* STOP ALL YOUR CRON JOBS
+* CHECKPOINT
+* DO A SYNC CHECK (ensure standby is in sync with primary)
+
+1. promote your standby (lab02)
+/usr/pgsql-17/bin/pg_ctl promote -D /u01/pgsql/17
+
+2. Do rewind in primary (lab01)
+/usr/pgsql-17/bin/pg_ctl stop -D /u01/pgsql/17
+/usr/pgsql-18/bin/pg_rewind --target-pgdata=/u01/pgsql/18 --source-server="port=5432 host=192.168.254.128" 
+ 
+3. Set up replication #old primary, lab01
+	
+	1) edit primary_connfinfo and restore_command
+	2) touch standby.signal
+                         
+#recovery_target_name = ''      # the named restore point to which recovery will proceed
+                                # (change requires restart)
+#recovery_target_time = ''      # the time stamp up to which recovery will proceed
+                                # (change requires restart)
+#recovery_target_xid =  ''      # the transaction ID up to which recovery will proceed
+                                # (change requires restart)
+#recovery_target_lsn =  ''      # the WAL LSN up to which recovery will proceed
+                                # (change requires restart
+
+pgpool
+------
+-> Ensure PostgreSQL software installed
+
+dnf install https://download.postgresql.org/pub/repos/yum/16/redhat/rhel-8-x86_64/pgpool-II-pg15-extensions-4.4.2-1.rhel8.x86_64.rpm
+
+cp  /etc/pgpool-II/pgpool.conf.sample /etc/pgpool-II/pgpool.conf
+Edit the configuration file /etc/pgpool-II/pgpool.conf
+
+listen_addresses = '*'
+pcp_socket_dir = '/var/run/postgresql'
+unix_socket_directories = '/var/run/postgresql'
+allow_clear_text_frontend_auth = on
+pool_passwd = ''
+
+
+# - Backend Connection Settings -
+
+backend_hostname0 = '192.168.110.171'                             
+backend_port0 = 5432
+backend_weight0 = 1
+backend_data_directory0 = '/u01/pgsql/16'
+backend_flag0 = 'ALLOW_TO_FAILOVER'                                 
+backend_application_name0 = 'server0'
+                                 
+backend_hostname1 = '192.168.110.172'
+backend_port1 = 5432
+backend_weight1 = 1
+backend_data_directory1 = '/u01/pgsql/16'
+backend_flag1 = 'ALLOW_TO_FAILOVER'
+backend_application_name1 = 'server1'
+
+sr_check_user = 'postgres'
+sr_check_password = 'postgres'
+sr_check_database = 'postgres'
+
+health_check_period =1
+
+health_check_user = 'postgres'
+health_check_password = 'postgres'
+health_check_database = 'postgres'
+
+touch /etc/pgpool-II/pool_passwd
+
+systemctl start pgpool-II
+
+[postgres@v3 ~]$ export PGPASSWORD=postgres
+[postgres@v3 ~]$ psql  -U postgres -p 9999 postgres  -c "show pool_nodes"
+
+touch /etc/pgpool-II/pool_passwd
+
+pgpool = connection caching+load balancing + (high availability***)
+pgbouncer = connection caching
+patroni = load balancing + high availability + (pgbouncer)
+
+max_wal_size?
+
+	- you are doing transaction worth morethan max_wal_size
+	- setup archivelogging and archive location is not reachable.
+	- setup replication slot based replication and standby is not reachable.
+
+
+example.,
+============
+
+  pid  |   client_addr   |  sent_lsn  | replay_lsn | lag in mb
+-------+-----------------+------------+------------+-----------
+ 11897 | 192.168.169.129 | 0/8F7D6000 | 0/8E02AD10 | 24 MB
+(1 row)
+
+         Friday 10 October 2025 08:19:19 AM (every 2s)
+
+  pid  |   client_addr   |  sent_lsn  | replay_lsn | lag in mb
+-------+-----------------+------------+------------+-----------
+ 11897 | 192.168.169.129 | 0/8F8F0AB0 | 0/8F8F0AB0 | 0 bytes
+(1 row)
+
+
+#recovery_target_name = ''      # the named restore point to which recovery will proceed
+                                # (change requires restart)
+#recovery_target_time = ''      # the time stamp up to which recovery will proceed
+                                # (change requires restart)
+#recovery_target_xid = ''       # the transaction ID up to which recovery will proceed
+                                # (change requires restart)
+#recovery_target_lsn = ''       # the WAL LSN up to which recovery will proceed
+                                # (change requires restart)
+ 
+ LOG:  restored log file "00000001000000000000004B" from archive
+ LOG:  restored log file "00000001000000000000004C" from archive
+ LOG:  restored log file "00000001000000000000004D" from archive
+ LOG:  redo in progress, elapsed time: 10.90 s, current LSN: 0/4CFEBE38
+ LOG:  restored log file "00000001000000000000004E" from archive
+ LOG:  restored log file "00000001000000000000004F" from archive
+ LOG:  restored log file "000000010000000000000050" from archive
+ LOG:  recovery stopping after WAL location (LSN) "0/50382BA8"
+ LOG:  pausing at the end of recovery
+ HINT:  Execute pg_wal_replay_resume() to promote.
+ 
+ 
+ LOG:  restored log file "00000001000000000000004D" from archive
+ LOG:  recovery stopping after WAL location (LSN) "0/4D831358"
+ FATAL:  requested recovery stop point is before consistent recovery point
+ LOG:  startup process (PID 2042) exited with exit code 1
+ LOG:  terminating any other active server processes
+ LOG:  shutting down due to startup process failure
+ LOG:  database system is shut down
+ 
+ 
+ postgres=# select * from test;
+ id | sal |             tm
+----+-----+----------------------------
+  1 | 100 | 2025-10-10 07:44:31.592875
+  2 | 200 | 2025-10-10 07:45:40.562474
+  3 | 300 | 2025-10-10 07:46:15.766428
+(3 rows)
+
+
+
+ postgres=# select now();
+               now
+----------------------------------
+ 2025-10-10 07:46:35.153845+05:30
+(1 row)
+
+postgres=# delete from test where id=3;
+DELETE 1
+postgres=#
+
+
+
+
+
+while true;
+do
+psql -Upostgres -h192.168.231.140 -p5001 -c "select inet_server_addr(),now()::timestamp;" -c " select * from emp" -t;
+sleep 1;
+done
+
+
+
+default_pool_size = 20
+max_client_conn = 1000
+
+;; When server connection is released back to pool:
+;;   session      - after client disconnects (default)
+;;   transaction  - after transaction finishes
+;;   statement    - after statement finishes
+
+
+
+How to setup replication in postgres
+-------------------------------------
+1. take the backup of primary (machine 1) from machine 2.
+/usr/pgsql-18/bin/pg_basebackup -D /u01/pgsql/18 --checkpoint=fast -P -h 192.168.254.128
+
+2. tell your postmaster that lab02 is a standby machine and not a standalone machine
+touch standby.signal
+
+3. get the archivelogs from lab01 and apply them continously in lab02
+restore_command = 'scp 192.168.254.128:/u01/archivelogs/%f %p'
+
+4. set primary_conninfo to make lab02 read primary wals.
+primary_connfinfo="user=postgres password=postgres host=192.168.254.128
